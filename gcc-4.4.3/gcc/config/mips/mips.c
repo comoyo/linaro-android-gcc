@@ -13345,7 +13345,10 @@ mips_reorg (void)
   if (mips_r10k_cache_barrier != R10K_CACHE_BARRIER_NONE)
     r10k_insert_cache_barriers ();
   if (optimize > 0 && flag_delayed_branch)
-    dbr_schedule (get_insns ());
+    {
+      cleanup_barriers ();
+      dbr_schedule (get_insns ());
+    }
   mips_reorg_process_insns ();
   if (!TARGET_MIPS16
       && TARGET_EXPLICIT_RELOCS
@@ -14070,7 +14073,7 @@ mips_override_options (void)
        GNU ld 2.21 and GCC 4.5 have support for read-only .eh_frames,
        but for the time being, we should stick to the approach used
        in 4.3 and earlier.  */
-  flag_dwarf2_cfi_asm = 0;
+  flag_dwarf2_cfi_asm = 1;
 
   mips_init_print_operand_punct ();
 

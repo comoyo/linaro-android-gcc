@@ -5148,10 +5148,22 @@ arm_legitimate_index_p (enum machine_mode mode, rtx index, RTX_CODE outer,
 	    && INTVAL (index) > -1024
 	    && (INTVAL (index) & 3) == 0);
 
-  if (TARGET_NEON
-      && (VALID_NEON_DREG_MODE (mode) || VALID_NEON_QREG_MODE (mode)))
+  /* For quad modes, we restrict the constant offset to be slightly less
+     than what the instruction format permits.  We do this because for
+     quad mode moves, we will actually decompose them into two separate
+     double-mode reads or writes.  INDEX must therefore be a valid
+     (double-mode) offset and so should INDEX+8.  */
+  if (TARGET_NEON && VALID_NEON_QREG_MODE (mode))
     return (code == CONST_INT
 	    && INTVAL (index) < 1016
+	    && INTVAL (index) > -1024
+	    && (INTVAL (index) & 3) == 0);
+
+  /* We have no such constraint on double mode offsets, so we permit the
+     full range of the instruction format.  */
+  if (TARGET_NEON && VALID_NEON_DREG_MODE (mode))
+    return (code == CONST_INT
+	    && INTVAL (index) < 1024
 	    && INTVAL (index) > -1024
 	    && (INTVAL (index) & 3) == 0);
 
@@ -5265,10 +5277,22 @@ thumb2_legitimate_index_p (enum machine_mode mode, rtx index, int strict_p)
 		&& (INTVAL (index) & 3) == 0);
     }
 
-  if (TARGET_NEON
-      && (VALID_NEON_DREG_MODE (mode) || VALID_NEON_QREG_MODE (mode)))
+  /* For quad modes, we restrict the constant offset to be slightly less
+     than what the instruction format permits.  We do this because for
+     quad mode moves, we will actually decompose them into two separate
+     double-mode reads or writes.  INDEX must therefore be a valid
+     (double-mode) offset and so should INDEX+8.  */
+  if (TARGET_NEON && VALID_NEON_QREG_MODE (mode))
     return (code == CONST_INT
 	    && INTVAL (index) < 1016
+	    && INTVAL (index) > -1024
+	    && (INTVAL (index) & 3) == 0);
+
+  /* We have no such constraint on double mode offsets, so we permit the
+     full range of the instruction format.  */
+  if (TARGET_NEON && VALID_NEON_DREG_MODE (mode))
+    return (code == CONST_INT
+	    && INTVAL (index) < 1024
 	    && INTVAL (index) > -1024
 	    && (INTVAL (index) & 3) == 0);
 
@@ -8111,10 +8135,13 @@ arm_coproc_mem_operand (rtx op, bool wb)
 }
 
 /* Return TRUE if OP is a memory operand which we can load or store a vector
-   to/from. If CORE is true, we're moving from ARM registers not Neon
-   registers.  */
+   to/from. TYPE is one of the following values:
+    0 - Vector load/stor (vldr)
+    1 - Core registers (ldm)
+    2 - Element/structure loads (vld1)
+ */
 int
-neon_vector_mem_operand (rtx op, bool core)
+neon_vector_mem_operand (rtx op, int type)
 {
   rtx ind;
 
@@ -8147,23 +8174,15 @@ neon_vector_mem_operand (rtx op, bool core)
     return arm_address_register_rtx_p (ind, 0);
 
   /* Allow post-increment with Neon registers.  */
-  if (!core && GET_CODE (ind) == POST_INC)
+  if (type != 1 && (GET_CODE (ind) == POST_INC || GET_CODE (ind) == PRE_DEC))
     return arm_address_register_rtx_p (XEXP (ind, 0), 0);
 
-#if 0
-  /* FIXME: We can support this too if we use VLD1/VST1.  */
-  if (!core
-      && GET_CODE (ind) == POST_MODIFY
-      && arm_address_register_rtx_p (XEXP (ind, 0), 0)
-      && GET_CODE (XEXP (ind, 1)) == PLUS
-      && rtx_equal_p (XEXP (XEXP (ind, 1), 0), XEXP (ind, 0)))
-    ind = XEXP (ind, 1);
-#endif
+  /* FIXME: vld1 allows register post-modify.  */
 
   /* Match:
      (plus (reg)
           (const)).  */
-  if (!core
+  if (type == 0
       && GET_CODE (ind) == PLUS
       && GET_CODE (XEXP (ind, 0)) == REG
       && REG_MODE_OK_FOR_BASE_P (XEXP (ind, 0), VOIDmode)
@@ -8233,7 +8252,7 @@ coproc_secondary_reload_class (enum machine_mode mode, rtx x, bool wb)
   if (TARGET_NEON
       && (GET_MODE_CLASS (mode) == MODE_VECTOR_INT
           || GET_MODE_CLASS (mode) == MODE_VECTOR_FLOAT)
-      && neon_vector_mem_operand (x, FALSE))
+      && neon_vector_mem_operand (x, 0))
      return NO_REGS;
 
   if (arm_coproc_mem_operand (x, wb) || s_register_operand (x, mode))
@@ -12022,7 +12041,7 @@ output_move_double (rtx *operands)
 }
 
 /* Output a move, load or store for quad-word vectors in ARM registers.  Only
-   handles MEMs accepted by neon_vector_mem_operand with CORE=true.  */
+   handles MEMs accepted by neon_vector_mem_operand with TYPE=1.  */
 
 const char *
 output_move_quad (rtx *operands)
@@ -12218,6 +12237,13 @@ output_move_neon (rtx *operands)
       ops[1] = reg;
       break;
 
+    case PRE_DEC:
+      /* FIXME: We should be using vld1/vst1 here in BE mode?  */
+      templ = "v%smdb%%?\t%%0!, %%h1";
+      ops[0] = XEXP (addr, 0);
+      ops[1] = reg;
+      break;
+    
     case POST_MODIFY:
       /* FIXME: Not currently enabled in neon_vector_mem_operand.  */
       gcc_unreachable ();
@@ -15096,6 +15122,24 @@ arm_print_operand (FILE *stream, rtx x, int code)
       {
         HOST_WIDE_INT bits = INTVAL (x);
         fputs ((bits & 4) != 0 ? "r" : "", stream);
+      }
+      return;
+
+    /* Memory operand for vld1/vst1 instruction.  */
+    case 'A':
+      {
+	rtx addr;
+	bool postinc = FALSE;
+	gcc_assert (GET_CODE (x) == MEM);
+	addr = XEXP (x, 0);
+	if (GET_CODE (addr) == POST_INC)
+	  {
+	    postinc = 1;
+	    addr = XEXP (addr, 0);
+	  }
+	asm_fprintf (stream, "[%r]", REGNO (addr));
+	if (postinc)
+	  fputs("!", stream);
       }
       return;
 
@@ -18511,8 +18555,8 @@ thumb_far_jump_used_p (void)
 
   /* In reload pass we haven't got the exact jump instruction length,
      but we can get a reasonable estimation based on the maximum
-     possible function length.  */
-  if (!reload_completed)
+     possible function length. */
+  if (optimize && !reload_completed)
     {
       int function_length = estimate_function_length();
       if (function_length < SHORTEST_FAR_JUMP_LENGTH)
@@ -20934,6 +20978,18 @@ arm_mangle_type (const_tree type)
   if (TARGET_AAPCS_BASED 
       && lang_hooks.types_compatible_p (CONST_CAST_TREE (type), va_list_type))
     {
+  /* Disable this obsolete warning for Android, because none of the exposed APIs
+     by NDK is impacted by this change of ARM ABI. This warning can be triggered
+     very easily by compiling the following code using arm-linux-androideabi-g++:
+
+         typedef __builtin_va_list __gnuc_va_list;
+         typedef __gnuc_va_list va_list;
+         void foo(va_list v) { }
+
+     We could advise developer to add "-Wno-psabi", but doing so also categorically
+     deny other cases guarded by "warn_psabi".  Hence the decision to disable it
+     case by case here.
+
       static bool warned;
       if (!warned && warn_psabi)
 	{
@@ -20941,6 +20997,7 @@ arm_mangle_type (const_tree type)
 	  inform (input_location,
 		  "the mangling of %<va_list%> has changed in GCC 4.4");
 	}
+   */
       return "St9__va_list";
     }
 
