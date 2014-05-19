@@ -15391,6 +15391,8 @@ output_return_instruction (rtx operand, int really_return, int reverse)
       else
 	return_reg = reg_names[LR_REGNUM];
 
+      if (!TARGET_THUMB2_FAKE_APCS_FRAME)
+    {
       if ((live_regs_mask & (1 << IP_REGNUM)) == (1 << IP_REGNUM))
 	{
 	  /* There are three possible reasons for the IP register
@@ -15407,6 +15409,7 @@ output_return_instruction (rtx operand, int really_return, int reverse)
 	  else
 	    gcc_assert (IS_INTERRUPT (func_type) || TARGET_REALLY_IWMMXT);
 	}
+    }
 
       /* On some ARM architectures it is faster to use LDR rather than
 	 LDM to load a single register.  On other architectures, the
