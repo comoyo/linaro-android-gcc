@@ -1659,6 +1659,21 @@ arm_option_override (void)
       target_flags &= ~MASK_APCS_FRAME;
     }
 
+  if (TARGET_THUMB2_FAKE_APCS_FRAME && !(insn_flags & FL_THUMB2))
+    {
+      warning (0, "ignoring -mthumb2-fake-apcs-frame for non-Thumb2 target");
+      target_flags &= ~MASK_THUMB2_FAKE_APCS_FRAME;
+    }
+
+  if (TARGET_THUMB2_FAKE_APCS_FRAME && TARGET_ARM)
+    {
+      target_flags &= ~MASK_THUMB2_FAKE_APCS_FRAME;
+      if (!TARGET_APCS_FRAME)
+  {
+    warning (0, "-mthumb2-fake-apcs-frame but not -mapcs-frame specified when compiling for ARM");
+  }
+    }
+
   /* Callee super interworking implies thumb interworking.  Adding
      this to the flags here simplifies the logic elsewhere.  */
   if (TARGET_THUMB && TARGET_CALLEE_INTERWORKING)
@@ -14093,6 +14108,11 @@ arm_compute_save_reg_mask (void)
   if (cfun->machine->lr_save_eliminated)
     save_reg_mask &= ~ (1 << LR_REGNUM);
 
+  if (TARGET_THUMB2_FAKE_APCS_FRAME && (save_reg_mask & (1 << LR_REGNUM)))
+    save_reg_mask |=
+      (1 << ARM_HARD_FRAME_POINTER_REGNUM)
+      | (1 << IP_REGNUM);
+
   if (TARGET_REALLY_IWMMXT
       && ((bit_count (save_reg_mask)
 	   + ARM_NUM_INTS (crtl->args.pretend_args_size +
@@ -14308,6 +14328,8 @@ output_return_instruction (rtx operand, int really_return, int reverse)
       else
 	return_reg = reg_names[LR_REGNUM];
 
+      if (!TARGET_THUMB2_FAKE_APCS_FRAME)
+    {
       if ((live_regs_mask & (1 << IP_REGNUM)) == (1 << IP_REGNUM))
 	{
 	  /* There are three possible reasons for the IP register
@@ -14324,6 +14346,7 @@ output_return_instruction (rtx operand, int really_return, int reverse)
 	  else
 	    gcc_assert (IS_INTERRUPT (func_type) || TARGET_REALLY_IWMMXT);
 	}
+    }
 
       /* On some ARM architectures it is faster to use LDR rather than
 	 LDM to load a single register.  On other architectures, the
@@ -15980,6 +16003,15 @@ arm_expand_prologue (void)
 	  RTX_FRAME_RELATED_P (insn) = 1;
 	}
     }
+  else if (TARGET_THUMB2_FAKE_APCS_FRAME &&
+     (offsets->saved_regs_mask & (1 << ARM_HARD_FRAME_POINTER_REGNUM))) {
+    rtx arm_fp_rtx = gen_raw_REG (Pmode, ARM_HARD_FRAME_POINTER_REGNUM);
+
+    insn = GEN_INT (saved_regs);
+    insn = emit_insn (gen_addsi3 (arm_fp_rtx, stack_pointer_rtx, insn));
+    /* This is not "frame-related", because it doesn't set the frame
+       pointer that a debugger would use to find things. */
+  }
 
   if (flag_stack_usage)
     current_function_static_stack_size
@@ -23820,11 +23852,12 @@ arm_conditional_register_usage (void)
      is an easy way of ensuring that it remains valid for all
      calls.  */
   if (TARGET_APCS_FRAME || TARGET_CALLER_INTERWORKING
-      || TARGET_TPCS_FRAME || TARGET_TPCS_LEAF_FRAME)
+      || TARGET_TPCS_FRAME || TARGET_TPCS_LEAF_FRAME
+      || TARGET_THUMB2_FAKE_APCS_FRAME)
     {
       fixed_regs[ARM_HARD_FRAME_POINTER_REGNUM] = 1;
       call_used_regs[ARM_HARD_FRAME_POINTER_REGNUM] = 1;
-      if (TARGET_CALLER_INTERWORKING)
+      if (TARGET_CALLER_INTERWORKING || TARGET_THUMB2_FAKE_APCS_FRAME)
 	global_regs[ARM_HARD_FRAME_POINTER_REGNUM] = 1;
     }
   SUBTARGET_CONDITIONAL_REGISTER_USAGE
